@@ -46,7 +46,15 @@ LOG="src/log/${DATASET}"; mkdir -p "$LOG"
 echo "Job $PBS_JOBID on $(hostname): $CONFIG seeds=${SEEDS//:/ } epochs=$EPOCHS parallel=$PARALLEL $EXTRA_ARGS"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
-pids=(); runs=()
+# split the job's CPUs between the parallel seeds (otherwise each python process starts one thread per
+# core of the whole node and the 3 seeds fight over the 4 allocated CPUs)
+NSEED=$(echo ${SEEDS//:/ } | wc -w)
+if [ "$PARALLEL" = "1" ] && [ "$NSEED" -gt 1 ]; then T=$(( ${NCPUS:-4} / NSEED )); else T=${NCPUS:-4}; fi
+[ "$T" -lt 1 ] && T=1
+export OMP_NUM_THREADS=$T MKL_NUM_THREADS=$T
+echo "threads per seed: $T"
+
+pids=(); runs=(); fail=0
 for SEED in ${SEEDS//:/ }; do
     RUN="${DATASET}_${MODEL}_${MODS}_seed${SEED}${TAG:+_$TAG}"   # same name main.py gives its log/json
     if ls "${LOG}/${RUN}_20"*.json >/dev/null 2>&1; then
@@ -58,10 +66,10 @@ for SEED in ${SEEDS//:/ }; do
     (cd src && exec python -u main.py $ARGS --dataset "$DATASET" --random_seed "$SEED" --epochs "$EPOCHS" \
         --resume ${TAG:+--tag "$TAG"} $EXTRA_ARGS) >> "${LOG}/${RUN}.out" 2>&1 &
     pid=$!
-    if [ "$PARALLEL" = "1" ]; then pids+=($pid); runs+=($RUN); else wait $pid; echo "$RUN exit $?"; fi
+    if [ "$PARALLEL" = "1" ]; then pids+=($pid); runs+=($RUN)
+    else wait $pid; rc=$?; echo "$RUN exit $rc"; [ $rc -ne 0 ] && { fail=1; tail -5 "${LOG}/${RUN}.out"; }; fi
 done
 
-fail=0
 for i in "${!pids[@]}"; do
     wait "${pids[$i]}"; rc=$?
     echo "${runs[$i]} exit $rc"; [ $rc -ne 0 ] && { fail=1; tail -5 "${LOG}/${runs[$i]}.out"; }

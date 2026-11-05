@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N Iq
+#PBS -q small_gpuq
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -l walltime=12:00:00
+#PBS -j oe
+#
+# Several (config, seed) runs ONE AFTER ANOTHER inside a single job (when only a few jobs are allowed).
+#   qsub -N IqA -v RUNS="idom_idtext/1997+idom_idtext/2024",TAG=v3,EXTRA_ARGS=--test_interval=20 scripts/queue_run.pbs
+#   qsub -N IqB -v RUNS="fmrec/1997+idom_idtext/42",TAG=v3,EXTRA_ARGS=--test_interval=20 scripts/queue_run.pbs
+# RUNS: config/seed items joined by "+"; config = fmrec | idom_id | idom_text | idom_idtext.
+# Finished runs are skipped and an unfinished run resumes from its last checkpoint, so when the job hits
+# the walltime just qsub the SAME command again.
+cd "$PBS_O_WORKDIR" || exit 1
+RUNS="${RUNS:?set RUNS=config/seed+config/seed...}"
+fail=0
+for item in ${RUNS//+/ }; do
+    cfg="${item%%/*}"; seed="${item##*/}"
+    echo "===== $(date '+%F %T')  $cfg  seed $seed"
+    CONFIG="$cfg" SEEDS="$seed" PARALLEL=0 bash scripts/idom_run.pbs || fail=1
+done
+echo "===== $(date '+%F %T')  queue finished (fail=$fail)"
+exit $fail
