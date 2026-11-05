@@ -151,6 +151,7 @@ class FM_xstart(nn.Module):
         self.att = Transformer_rep(args)
 
         self.lambda_uncertainty = args.lambda_uncertainty
+        self.cpu_noise = getattr(args, 'cpu_noise', False)  # True = original FMRec (noise drawn on CPU, slow)
         self.dropout = nn.Dropout(args.dropout)
         self.norm_fm_rep = LayerNorm(self.hidden_size)
 
@@ -215,7 +216,10 @@ class FM_xstart(nn.Module):
     def forward(self, rep_item, x_t, t, mask_seq):
         emb_t = self.time_embed(self.timestep_embedding(t, self.hidden_size))
         
-        lambda_uncertainty = th.normal(mean=th.full(rep_item.shape, self.lambda_uncertainty), std=th.full(rep_item.shape, self.lambda_uncertainty)).to(x_t.device)
+        if self.cpu_noise:
+            lambda_uncertainty = th.normal(mean=th.full(rep_item.shape, self.lambda_uncertainty), std=th.full(rep_item.shape, self.lambda_uncertainty)).to(x_t.device)
+        else:  # same distribution N(lambda, lambda^2), drawn directly on the GPU
+            lambda_uncertainty = self.lambda_uncertainty * (1.0 + th.randn_like(rep_item))
 
         rep_item_New = rep_item + (lambda_uncertainty * (x_t + emb_t).unsqueeze(1))
 

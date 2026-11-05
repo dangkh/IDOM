@@ -19,7 +19,8 @@ ap.add_argument('--metrics', nargs='+', default=['HR@10', 'NDCG@10', 'HR@20', 'N
 ap.add_argument('--csv', default=None)
 args = ap.parse_args()
 
-files = sorted(glob.glob(os.path.join(args.log_dir, args.dataset, '*.json')))
+files = sorted(f for f in glob.glob(os.path.join(args.log_dir, args.dataset, '*.json'))
+               if not f.endswith('_fusesweep.json'))
 groups = defaultdict(list)
 for f in files:
     with open(f) as fh:

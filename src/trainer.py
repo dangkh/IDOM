@@ -1,6 +1,8 @@
 import copy
 import datetime
 import json
+import os
+import random
 import time
 
 import numpy as np
@@ -23,6 +25,20 @@ def cal_hr(label, predict, ks):
     return [hit[:, :k].sum().item() / label.size()[0] for k in ks]
 
 
+def cal_hr_topk(label, topk_predict, ks):
+    hit = label == topk_predict
+    return [hit[:, :k].sum().item() / label.size()[0] for k in ks]
+
+
+def cal_ndcg_topk(label, topk_predict, ks):
+    hit = (label == topk_predict).int()
+    out = []
+    for k in ks:
+        max_dcg = dcg(torch.tensor([1] + [0] * (k - 1)))
+        out.append((dcg(hit[:, :k]) / max_dcg).mean().item())
+    return out
+
+
 def dcg(hit):
     log2 = torch.log2(torch.arange(1, hit.size()[-1] + 1) + 1).unsqueeze(0)
     return (hit / log2).sum(dim=-1)
@@ -39,9 +55,12 @@ def cal_ndcg(label, predict, ks):
 
 
 def hrs_and_ndcgs_k(scores, labels, ks):
-    labels, scores = labels.detach().cpu(), scores.detach().cpu()
+    # top-k on the device the scores live on (GPU); then only the B x max(k) indices go to the CPU.
+    # Same numbers as FMRec's version (which moved the full B x N score matrix to the CPU first).
+    _, topk = torch.topk(scores.detach(), k=max(ks), dim=-1)
+    labels, topk = labels.detach().cpu(), topk.cpu()
     metrics = {}
-    for k, n, h in zip(ks, cal_ndcg(labels, scores, ks), cal_hr(labels, scores, ks)):
+    for k, n, h in zip(ks, cal_ndcg_topk(labels, topk, ks), cal_hr_topk(labels, topk, ks)):
         metrics[f'HR@{k}'] = h
         metrics[f'NDCG@{k}'] = n
     return metrics
@@ -60,9 +79,30 @@ def evaluate(model, loader, args):
     return {key: {mk: round(float(np.mean(v)) * 100, 4) for mk, v in d.items()} for key, d in acc.items()}
 
 
+def _rng_state():
+    st = {'torch': torch.get_rng_state(), 'numpy': np.random.get_state(), 'python': random.getstate()}
+    if torch.cuda.is_available():
+        st['cuda'] = torch.cuda.get_rng_state_all()
+    return st
+
+
+def _set_rng_state(st):
+    torch.set_rng_state(st['torch'])
+    np.random.set_state(st['numpy'])
+    random.setstate(st['python'])
+    if 'cuda' in st and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(st['cuda'])
+
+
+def _atomic_save(obj, path):
+    tmp = path + '.tmp'
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
 def model_train(tra_data_loader, val_data_loader, test_data_loader, model, args, logger):
     def log(msg):
-        print(msg)
+        print(msg, flush=True)
         logger.info(msg)
 
     model = model.to(args.device)
@@ -71,11 +111,40 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model, args,
     ks = args.metric_ks
     best = {f'{m}@{k}': 0.0 for k in ks for m in ('HR', 'NDCG')}
     best_epoch = {key: -1 for key in best}
-    best_model, bad_count = copy.deepcopy(model), 0
-    history = []
-    train_time = 0.0
+    bad_count, history, train_time, start_epoch = 0, [], 0.0, 0
+    best_model = copy.deepcopy(model)
 
-    for epoch in range(args.epochs):
+    # ---- checkpoint / resume ----------------------------------------------------------------
+    ckpt_dir = args.ckpt_dir
+    last_path = os.path.join(ckpt_dir, 'last.pt') if ckpt_dir else None
+    best_path = os.path.join(ckpt_dir, 'best.pt') if ckpt_dir else None
+    if ckpt_dir:
+        os.makedirs(ckpt_dir, exist_ok=True)
+    if ckpt_dir and args.resume and os.path.exists(last_path):
+        ck = torch.load(last_path, map_location=args.device, weights_only=False)
+        model.load_state_dict(ck['model'])
+        optimizer.load_state_dict(ck['optimizer'])
+        lr_scheduler.load_state_dict(ck['scheduler'])
+        best, best_epoch, bad_count = ck['best'], ck['best_epoch'], ck['bad_count']
+        history, train_time, start_epoch = ck['history'], ck['train_time'], ck['epoch'] + 1
+        if os.path.exists(best_path):
+            best_model.load_state_dict(torch.load(best_path, map_location=args.device, weights_only=False)['model'])
+        _set_rng_state(ck['rng'])
+        log('RESUMED from {} at epoch {} (best so far {} at {}, bad_count {})'.format(
+            last_path, start_epoch, best, best_epoch, bad_count))
+
+    def save_last(epoch):
+        if not ckpt_dir:
+            return
+        _atomic_save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
+                      'scheduler': lr_scheduler.state_dict(), 'epoch': epoch, 'best': best,
+                      'best_epoch': best_epoch, 'bad_count': bad_count, 'history': history,
+                      'train_time': train_time, 'rng': _rng_state()}, last_path)
+
+    stopped = start_epoch >= args.epochs or bad_count >= args.patience
+    for epoch in range(start_epoch, args.epochs):
+        if stopped:
+            break
         model.train()
         t0 = time.time()
         losses, n_batches = [], len(tra_data_loader)
@@ -105,12 +174,26 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model, args,
             if improved:
                 bad_count = 0
                 best_model = copy.deepcopy(model)
+                if ckpt_dir:
+                    _atomic_save({'model': best_model.state_dict(), 'epoch': epoch, 'best': best,
+                                  'args': {k: v for k, v in vars(args).items()
+                                           if isinstance(v, (int, float, str, list, bool, type(None)))}},
+                                 best_path)
                 log('best val: {} at {}'.format(best, best_epoch))
             else:
                 bad_count += 1
             if bad_count >= args.patience:
                 log('early stop at epoch {}'.format(epoch))
-                break
+                stopped = True
+            save_last(epoch)
+        elif args.ckpt_every > 0 and epoch % args.ckpt_every == 0:
+            save_last(epoch)
+
+        # periodic TEST of the current model (logged only, never used for model selection)
+        if args.test_interval > 0 and epoch != 0 and epoch % args.test_interval == 0:
+            t3 = time.time()
+            tres = evaluate(model, test_data_loader, args)
+            log('Test epoch {} ({:.1f}s): {}'.format(epoch, time.time() - t3, json.dumps(tres)))
 
     if args.eval_interval > args.epochs:
         best_model = copy.deepcopy(model)
@@ -126,6 +209,9 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model, args,
 
     if args.eval_train:
         log('Train metrics: {}'.format(evaluate(best_model, tra_data_loader, args)))
+
+    if ckpt_dir and os.path.exists(last_path):
+        os.remove(last_path)  # run finished: keep only best.pt (used by tools/fuse_sweep.py)
 
     summary = {'args': {k: v for k, v in vars(args).items() if isinstance(v, (int, float, str, list, bool, type(None)))},
                'test': test_res, 'best_val': best, 'best_epoch': best_epoch,

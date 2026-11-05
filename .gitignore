@@ -4,3 +4,4 @@ __pycache__/
 datasets/data/*/text_emb_*.npy
 datasets/data/*/item_text.json
 datasets/data/*/item_asin.json
+src/ckpt/

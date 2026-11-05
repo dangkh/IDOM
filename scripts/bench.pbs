@@ -1,0 +1,18 @@
+#!/bin/bash
+#PBS -N Ibench
+#PBS -q small_gpuq
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -l walltime=01:30:00
+#PBS -j oe
+#
+# Speed benchmark (no training to convergence): train s/epoch, inference s/eval vs Euler steps,
+# GPU vs CPU noise, peak memory - for fmrec, idom_id, idom_text, idom_idtext. ~30-60 min.
+#   qsub scripts/bench.pbs
+#   qsub -v BENCH_ARGS="--configs fmrec idom_idtext --noise gpu" scripts/bench.pbs
+cd "$PBS_O_WORKDIR" || exit 1
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV:-Astar}"
+export OMP_NUM_THREADS=${NCPUS:-4} MKL_NUM_THREADS=${NCPUS:-4}
+echo "Job $PBS_JOBID on $(hostname)"
+nvidia-smi --query-gpu=name,memory.total,utilization.gpu --format=csv,noheader
+python -u tools/benchmark_speed.py ${BENCH_ARGS:-}

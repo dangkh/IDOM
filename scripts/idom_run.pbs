@@ -12,7 +12,8 @@
 #   qsub -v CONFIG=idom_idtext,TAG=w05,EXTRA_ARGS="--fuse_weights 1.0 0.5" scripts/idom_run.pbs
 #   PARALLEL=0 -> seeds one after another (needs ~3x walltime)
 # CONFIG: fmrec (a) | idom_id (b) | idom_text (c) | idom_idtext (d)
-# Seeds whose result JSON already exists in src/log/<DATASET>/ are skipped.
+# Seeds whose result JSON already exists in src/log/<DATASET>/ are skipped; unfinished seeds RESUME from their
+# last checkpoint, so after a walltime kill just qsub the same command again.
 
 cd "$PBS_O_WORKDIR" || exit 1
 source "$HOME/miniconda3/etc/profile.d/conda.sh"
@@ -53,8 +54,9 @@ for SEED in ${SEEDS//:/ }; do
     fi
     echo "start: $RUN  (stdout -> ${LOG}/${RUN}.out)"
     # no --gpu_id: PBS already sets CUDA_VISIBLE_DEVICES for the allocated GPU
+    # --resume: continues from src/ckpt/<dataset>/<run>/last.pt if a previous job was killed (e.g. walltime)
     (cd src && exec python -u main.py $ARGS --dataset "$DATASET" --random_seed "$SEED" --epochs "$EPOCHS" \
-        ${TAG:+--tag "$TAG"} $EXTRA_ARGS) > "${LOG}/${RUN}.out" 2>&1 &
+        --resume ${TAG:+--tag "$TAG"} $EXTRA_ARGS) >> "${LOG}/${RUN}.out" 2>&1 &
     pid=$!
     if [ "$PARALLEL" = "1" ]; then pids+=($pid); runs+=($RUN); else wait $pid; echo "$RUN exit $?"; fi
 done

@@ -86,14 +86,15 @@ conda deactivate
 #    Thư mục truyền vào phải chứa reviews_Beauty_5.json.gz và meta_Beauty.json.gz
 bash scripts/prepare_text.sh ~/ihpc_data/hkieu/amazon2014
 
-# 1) Chạy thử nhanh: 4 job, 41 epoch, 1 seed
+# 1) Chạy thử nhanh: 4 job (mỗi cấu hình một job), 1 seed, 41 epoch
 EPOCHS=41 SEEDS=1997 bash scripts/submit_all.sh
 
-# 2) Chạy đầy đủ: 4 cấu hình × 3 seed = 12 job (các run đã có kết quả sẽ tự bỏ qua)
+# 2) Chạy đầy đủ: vẫn chỉ 4 job. Mỗi job chạy 3 seed song song trên cùng một GPU.
+#    Seed nào đã có kết quả sẽ tự được bỏ qua; output của từng seed nằm ở src/log/amazon_beauty/<run>.out
 bash scripts/submit_all.sh
 
-# Chạy riêng một run
-qsub -v CONFIG=idom_idtext,SEED=2024 scripts/idom_run.pbs
+# Gửi riêng một cấu hình
+qsub -v CONFIG=idom_idtext scripts/idom_run.pbs
 qsub -v CONFIG=idom_idtext,TAG=w05,EXTRA_ARGS="--fuse_weights 1.0 0.5" scripts/idom_run.pbs
 
 # 3) Tổng hợp kết quả: bảng mean ± std theo seed
@@ -101,11 +102,53 @@ python tools/summarize.py --csv results_step1.csv
 ```
 
 `CONFIG` nhận các giá trị: `fmrec` (a), `idom_id` (b), `idom_text` (c), `idom_idtext` (d).
+Các seed viết cách nhau bằng dấu `:` khi truyền qua qsub, ví dụ `SEEDS=1997:2024:42`. Đặt `PARALLEL=0` để chạy các seed lần lượt; khi đó cần khoảng gấp 3 lần walltime.
 
 - **Walltime mặc định là 12 giờ.** Nếu queue `small_gpuq` có giới hạn thấp hơn, thêm `-l walltime=HH:MM:SS` khi qsub.
 - **Đừng truyền `--gpu_id` trong job**, vì PBS đã tự đặt `CUDA_VISIBLE_DEVICES`.
 - Encoder text được tải từ Hugging Face trong lần chạy đầu. Vì bước 0 chạy trên login node, thường không gặp vấn đề internet.
 - Nếu copy file từ Windows sang server mà gặp lỗi `$'\r': command not found`, chạy `dos2unix scripts/*.pbs scripts/*.sh`.
+
+## Bước 0b: đo tốc độ TRƯỚC khi chạy thật
+
+```bash
+qsub scripts/bench.pbs        # khoảng 30–60 phút; kết quả ở Ibench.o<jobid> và src/log/bench/*.json
+```
+
+Benchmark đo các con số sau cho fmrec, idom_id, idom_text và idom_idtext:
+- Thời gian train mỗi epoch.
+- Thời gian một lần eval trên tập val với 1, 5 và 30 bước Euler.
+- Nhiễu sinh trên GPU (mặc định mới) so với trên CPU (FMRec gốc).
+- Bộ nhớ GPU tối đa.
+
+Benchmark chạy một process trên một GPU, với trọng số ngẫu nhiên (tốc độ không phụ thuộc trọng số).
+
+Khi đã có `best.pt`, kiểm tra độ chính xác và thời gian theo số bước Euler:
+
+```bash
+python tools/eval_ckpt.py --run amazon_beauty_idom_id-text_seed1997_v2 --steps 1 2 5 10 30
+```
+
+## Checkpoint, resume, test định kỳ
+
+- **`best.pt`** được lưu mỗi khi val cải thiện, tức sau mỗi lần eval có kết quả tốt nhất mới.
+- **`last.pt`** được lưu sau mỗi lần eval, dùng để resume khi bị kill vì walltime: chỉ cần `qsub` lại đúng lệnh cũ. Khi run xong, `last.pt` bị xóa.
+- **Test định kỳ:** cứ mỗi 10 epoch (`--test_interval 10`), trainer eval tập test và ghi dòng `Test epoch E` vào log. Số này chỉ để ghi lại, không dùng để chọn model.
+- **Nhiễu trên GPU:** nhiễu λ được sinh trên GPU, cùng phân phối với bản gốc. Thêm `--cpu_noise` để dùng đúng cách của FMRec gốc.
+- **Metric:** top-k được tính trên GPU, cho cùng kết quả với bản gốc.
+- **Chọn trọng số gộp trên val:** `python tools/fuse_sweep.py --run <run>`
+
+## Tổng hợp từ epoch tốt nhất (kể cả run đang chạy hoặc đã bị kill)
+
+```bash
+python tools/summarize_logs.py              # chọn epoch tốt nhất theo val NDCG@10 (điểm fused)
+python tools/summarize_logs.py --select HR@10 --csv results_logs.csv
+```
+
+- Script đọc trực tiếp các file `src/log/<dataset>/*.out`. Với mỗi run, nó lấy epoch có val tốt nhất, rồi báo mean ± std qua các seed.
+- Hàng **VAL** luôn có số liệu.
+- Hàng **TEST** lấy số test cuối cùng nếu run đã xong. Nếu run chưa xong, nó lấy dòng `Test epoch E` ở đúng epoch có val tốt nhất. Trainer mới ghi dòng này mỗi 10 epoch.
+- Các run chạy bằng code cũ chỉ có số VAL, cho tới khi chạy xong.
 
 ## Cách đọc kết quả
 
