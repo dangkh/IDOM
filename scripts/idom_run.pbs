@@ -38,7 +38,7 @@ MODEL="${ARGS#--model }"; MODEL="${MODEL%% *}"
 RUN="${DATASET}_${MODEL}_${MODS}_seed${SEED}${TAG:+_$TAG}"   # same name main.py gives its log/json
 
 if [[ "$MODS" == *text* ]]; then
-    [ -f "$TEXT_EMB" ] || { echo "missing $TEXT_EMB -> run scripts/prepare_text.pbs first"; exit 1; }
+    [ -f "$TEXT_EMB" ] || { echo "missing $TEXT_EMB -> run scripts/prepare_text.sh first (CPU, no queue)"; exit 1; }
     ARGS="$ARGS --text_emb ../$TEXT_EMB"
 fi
 

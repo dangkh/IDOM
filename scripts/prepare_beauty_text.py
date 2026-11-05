@@ -158,6 +158,7 @@ def main():
                     help='any sentence-transformers model, e.g. sentence-transformers/all-mpnet-base-v2')
     ap.add_argument('--desc_words', type=int, default=64, help='words of description to keep (0 = none)')
     ap.add_argument('--batch_size', type=int, default=256)
+    ap.add_argument('--device', default='cpu', help='cpu is enough (~12k short texts); cuda also works')
     ap.add_argument('--skip_encode', action='store_true', help='only rebuild/verify mapping and texts')
     args = ap.parse_args()
     pkl = os.path.join(args.out_dir, 'dataset.pkl')
@@ -202,7 +203,7 @@ def main():
     print('4/4 encoding with', args.encoder)
     import numpy as np
     from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(args.encoder)
+    model = SentenceTransformer(args.encoder, device=args.device)
     emb = model.encode([texts[i] for i in range(1, n_items + 1)], batch_size=args.batch_size,
                        normalize_embeddings=True, show_progress_bar=True, convert_to_numpy=True)
     full = np.zeros((n_items + 1, emb.shape[1]), dtype=np.float32)

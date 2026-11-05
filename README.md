@@ -72,6 +72,36 @@ python main.py --model idom --modalities id text --text_emb %EMB% --gpu_id 0
 - Để báo cáo kết quả: chạy mỗi cấu hình với 3 seed (`--random_seed 1997`, `2024`, `42`).
 - Kết quả nằm ở `src\log\amazon_beauty\*.json`. Khóa `test.fused` là điểm chính. Với (d), file còn có `test.id` và `test.text` (điểm của từng quỹ đạo riêng lẻ).
 
+## Chạy trên GPU server (PBS)
+
+Các job dùng cùng cấu hình với `dragon_diag.pbs`: queue `small_gpuq`, `select=1:ncpus=4:ngpus=1:mem=32gb`,
+`~/miniconda3` và env `Astar`. Đổi env bằng `-v CONDA_ENV=...`. Lệnh chạy từ thư mục gốc của repo trên server.
+
+```bash
+# 0) Tạo text embedding (một lần). Thư mục RAW_DIR chứa reviews_Beauty_5.json.gz và meta_Beauty.json.gz
+qsub -v RAW_DIR=/path/to/amazon2014 scripts/prepare_text.pbs
+
+# 1) Chạy thử nhanh: 4 job, 41 epoch, 1 seed
+EPOCHS=41 SEEDS=1997 bash scripts/submit_all.sh
+
+# 2) Chạy đầy đủ: 4 cấu hình × 3 seed = 12 job (các run đã có kết quả sẽ tự bỏ qua)
+bash scripts/submit_all.sh
+
+# Chạy riêng một run
+qsub -v CONFIG=idom_idtext,SEED=2024 scripts/idom_run.pbs
+qsub -v CONFIG=idom_idtext,TAG=w05,EXTRA_ARGS="--fuse_weights 1.0 0.5" scripts/idom_run.pbs
+
+# 3) Tổng hợp kết quả: bảng mean ± std theo seed
+python tools/summarize.py --csv results_step1.csv
+```
+
+`CONFIG` nhận các giá trị: `fmrec` (a), `idom_id` (b), `idom_text` (c), `idom_idtext` (d).
+
+- **Walltime mặc định là 12 giờ.** Nếu queue `small_gpuq` có giới hạn thấp hơn, thêm `-l walltime=HH:MM:SS` khi qsub.
+- **Đừng truyền `--gpu_id` trong job**, vì PBS đã tự đặt `CUDA_VISIBLE_DEVICES`.
+- Encoder text được tải từ Hugging Face trong lần chạy đầu. Nếu node tính toán không có internet, hãy chạy `python scripts/prepare_beauty_text.py ...` một lần trên login node.
+- Nếu copy file từ Windows sang server mà gặp lỗi `$'\r': command not found`, chạy `dos2unix scripts/*.pbs scripts/*.sh`.
+
 ## Cách đọc kết quả
 
 - (b) ≈ (a): việc dùng chung vector field cộng modality embedding không làm hỏng FMRec.

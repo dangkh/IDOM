@@ -3,7 +3,7 @@
 #   bash scripts/submit_all.sh
 #   EPOCHS=41 SEEDS=1997 bash scripts/submit_all.sh                 # quick test, 4 jobs
 #   CONFIGS="idom_idtext" SEEDS="1997 2024 42" bash scripts/submit_all.sh
-# Run from the repository root. Text configs need scripts/prepare_text.pbs to have finished.
+# Run from the repository root. Text configs need scripts/prepare_text.sh to have been run (CPU, no queue).
 cd "$(dirname "$0")/.." || exit 1
 CONFIGS="${CONFIGS:-fmrec idom_id idom_text idom_idtext}"
 SEEDS="${SEEDS:-1997 2024 42}"
