@@ -7,7 +7,10 @@
 cd "$(dirname "$0")/.." || exit 1
 RAW_DIR="${1:?usage: bash scripts/prepare_text.sh /folder/with/reviews_Beauty_5.json.gz+meta_Beauty.json.gz}"
 source "$HOME/miniconda3/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV:-Astar}"
+# separate CPU env so the training env (Astar, torch 2.5.1+cu121) is never touched; create it once:
+#   conda create -n idomtext python=3.11 -y && conda activate idomtext
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install sentence-transformers numpy
+conda activate "${TEXT_ENV:-idomtext}" || { echo "env ${TEXT_ENV:-idomtext} not found - create it (see header)"; exit 1; }
 ENCODER="${ENCODER:-sentence-transformers/all-MiniLM-L6-v2}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"   # be gentle on a shared login node
 python -u scripts/prepare_beauty_text.py \

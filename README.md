@@ -78,8 +78,13 @@ Các job dùng cùng cấu hình với `dragon_diag.pbs`: queue `small_gpuq`, `s
 `~/miniconda3` và env `Astar`. Đổi env bằng `-v CONDA_ENV=...`. Lệnh chạy từ thư mục gốc của repo trên server.
 
 ```bash
-# 0) Tạo text embedding (một lần). Thư mục RAW_DIR chứa reviews_Beauty_5.json.gz và meta_Beauty.json.gz
-qsub -v RAW_DIR=/path/to/amazon2014 scripts/prepare_text.pbs
+# 0) Tạo text embedding (một lần): chạy thẳng trên login node bằng CPU, không cần GPU và không qua queue, mất vài phút.
+#    Bước này dùng env CPU riêng tên idomtext, để không đụng tới torch 2.5.1 của env Astar. Tạo env một lần:
+conda create -n idomtext python=3.11 -y && conda activate idomtext
+pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install sentence-transformers numpy
+conda deactivate
+#    Thư mục truyền vào phải chứa reviews_Beauty_5.json.gz và meta_Beauty.json.gz
+bash scripts/prepare_text.sh ~/ihpc_data/hkieu/amazon2014
 
 # 1) Chạy thử nhanh: 4 job, 41 epoch, 1 seed
 EPOCHS=41 SEEDS=1997 bash scripts/submit_all.sh
@@ -99,7 +104,7 @@ python tools/summarize.py --csv results_step1.csv
 
 - **Walltime mặc định là 12 giờ.** Nếu queue `small_gpuq` có giới hạn thấp hơn, thêm `-l walltime=HH:MM:SS` khi qsub.
 - **Đừng truyền `--gpu_id` trong job**, vì PBS đã tự đặt `CUDA_VISIBLE_DEVICES`.
-- Encoder text được tải từ Hugging Face trong lần chạy đầu. Nếu node tính toán không có internet, hãy chạy `python scripts/prepare_beauty_text.py ...` một lần trên login node.
+- Encoder text được tải từ Hugging Face trong lần chạy đầu. Vì bước 0 chạy trên login node, thường không gặp vấn đề internet.
 - Nếu copy file từ Windows sang server mà gặp lỗi `$'\r': command not found`, chạy `dos2unix scripts/*.pbs scripts/*.sh`.
 
 ## Cách đọc kết quả

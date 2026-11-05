@@ -162,6 +162,17 @@ def main():
     ap.add_argument('--skip_encode', action='store_true', help='only rebuild/verify mapping and texts')
     args = ap.parse_args()
     pkl = os.path.join(args.out_dir, 'dataset.pkl')
+    if not args.skip_encode:  # fail fast, before the slow mapping/meta steps
+        try:
+            import torch
+            from transformers.utils import is_torch_available
+            import sentence_transformers
+        except ImportError as e:
+            raise SystemExit(f'missing package: {e}. See README (env idomtext).')
+        if not is_torch_available():
+            raise SystemExit(f'transformers cannot use torch {torch.__version__} in this env '
+                             f'(version mismatch). Use the separate env idomtext (see README).')
+        print(f'    torch {torch.__version__} / sentence-transformers {sentence_transformers.__version__}')
 
     print('1/4 rebuilding S3Rec id mapping from', args.reviews)
     user_items = get_interaction(amazon_interactions(args.reviews))

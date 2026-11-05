@@ -5,21 +5,22 @@
 #PBS -l walltime=12:00:00
 #PBS -j oe
 #
-# One FMRec / IDOM run (step 1: no intent anchor yet).
-#   qsub scripts/idom_run.pbs                                     # CONFIG=fmrec, SEED=1997
-#   qsub -v CONFIG=idom_idtext,SEED=2024 scripts/idom_run.pbs
-#   qsub -v CONFIG=idom_text,EPOCHS=41 scripts/idom_run.pbs        # quick test (val at epoch 20, 40)
+# One job = one CONFIG; it runs every seed in SEEDS on the same GPU (in parallel by default).
+#   qsub scripts/idom_run.pbs                                         # CONFIG=fmrec, seeds 1997:2024:42
+#   qsub -v CONFIG=idom_idtext scripts/idom_run.pbs
+#   qsub -v CONFIG=idom_text,SEEDS=1997,EPOCHS=41 scripts/idom_run.pbs  # quick test
 #   qsub -v CONFIG=idom_idtext,TAG=w05,EXTRA_ARGS="--fuse_weights 1.0 0.5" scripts/idom_run.pbs
+#   PARALLEL=0 -> seeds one after another (needs ~3x walltime)
 # CONFIG: fmrec (a) | idom_id (b) | idom_text (c) | idom_idtext (d)
-# Skips the run if a result JSON for (CONFIG, SEED, TAG) already exists in src/log/<DATASET>/.
-# Walltime: 500 epochs with early stopping; override with  qsub -l walltime=HH:MM:SS ...
+# Seeds whose result JSON already exists in src/log/<DATASET>/ are skipped.
 
 cd "$PBS_O_WORKDIR" || exit 1
 source "$HOME/miniconda3/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV:-Astar}"
 
 CONFIG="${CONFIG:-fmrec}"
-SEED="${SEED:-1997}"
+SEEDS="${SEEDS:-1997:2024:42}"            # colon-separated (qsub -v splits on commas)
+PARALLEL="${PARALLEL:-1}"
 DATASET="${DATASET:-amazon_beauty}"
 EPOCHS="${EPOCHS:-500}"
 TAG="${TAG:-}"
@@ -35,20 +36,33 @@ case "$CONFIG" in
     *) echo "unknown CONFIG=$CONFIG"; exit 1 ;;
 esac
 MODEL="${ARGS#--model }"; MODEL="${MODEL%% *}"
-RUN="${DATASET}_${MODEL}_${MODS}_seed${SEED}${TAG:+_$TAG}"   # same name main.py gives its log/json
-
 if [[ "$MODS" == *text* ]]; then
     [ -f "$TEXT_EMB" ] || { echo "missing $TEXT_EMB -> run scripts/prepare_text.sh first (CPU, no queue)"; exit 1; }
     ARGS="$ARGS --text_emb ../$TEXT_EMB"
 fi
+LOG="src/log/${DATASET}"; mkdir -p "$LOG"
 
-if ls "src/log/${DATASET}/${RUN}_20"*.json >/dev/null 2>&1; then
-    echo "already done: $(ls src/log/${DATASET}/${RUN}_20*.json)"; exit 0
-fi
-
-echo "Job $PBS_JOBID on $(hostname): $RUN epochs=$EPOCHS $EXTRA_ARGS"
+echo "Job $PBS_JOBID on $(hostname): $CONFIG seeds=${SEEDS//:/ } epochs=$EPOCHS parallel=$PARALLEL $EXTRA_ARGS"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-# no --gpu_id: PBS already sets CUDA_VISIBLE_DEVICES for the allocated GPU
-(cd src && python -u main.py $ARGS --dataset "$DATASET" --random_seed "$SEED" --epochs "$EPOCHS" \
-    ${TAG:+--tag "$TAG"} $EXTRA_ARGS) || { echo "training failed"; exit 1; }
-echo "done: $(ls src/log/${DATASET}/${RUN}_20*.json)"
+
+pids=(); runs=()
+for SEED in ${SEEDS//:/ }; do
+    RUN="${DATASET}_${MODEL}_${MODS}_seed${SEED}${TAG:+_$TAG}"   # same name main.py gives its log/json
+    if ls "${LOG}/${RUN}_20"*.json >/dev/null 2>&1; then
+        echo "skip (already done): $RUN"; continue
+    fi
+    echo "start: $RUN  (stdout -> ${LOG}/${RUN}.out)"
+    # no --gpu_id: PBS already sets CUDA_VISIBLE_DEVICES for the allocated GPU
+    (cd src && exec python -u main.py $ARGS --dataset "$DATASET" --random_seed "$SEED" --epochs "$EPOCHS" \
+        ${TAG:+--tag "$TAG"} $EXTRA_ARGS) > "${LOG}/${RUN}.out" 2>&1 &
+    pid=$!
+    if [ "$PARALLEL" = "1" ]; then pids+=($pid); runs+=($RUN); else wait $pid; echo "$RUN exit $?"; fi
+done
+
+fail=0
+for i in "${!pids[@]}"; do
+    wait "${pids[$i]}"; rc=$?
+    echo "${runs[$i]} exit $rc"; [ $rc -ne 0 ] && { fail=1; tail -5 "${LOG}/${runs[$i]}.out"; }
+done
+ls "${LOG}/${DATASET}_${MODEL}_${MODS}_seed"*"${TAG:+_$TAG}_20"*.json 2>/dev/null
+exit $fail
