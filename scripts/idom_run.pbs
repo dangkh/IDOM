@@ -1,0 +1,54 @@
+#!/bin/bash
+#PBS -N idom
+#PBS -q small_gpuq
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -l walltime=12:00:00
+#PBS -j oe
+#
+# One FMRec / IDOM run (step 1: no intent anchor yet).
+#   qsub scripts/idom_run.pbs                                     # CONFIG=fmrec, SEED=1997
+#   qsub -v CONFIG=idom_idtext,SEED=2024 scripts/idom_run.pbs
+#   qsub -v CONFIG=idom_text,EPOCHS=41 scripts/idom_run.pbs        # quick test (val at epoch 20, 40)
+#   qsub -v CONFIG=idom_idtext,TAG=w05,EXTRA_ARGS="--fuse_weights 1.0 0.5" scripts/idom_run.pbs
+# CONFIG: fmrec (a) | idom_id (b) | idom_text (c) | idom_idtext (d)
+# Skips the run if a result JSON for (CONFIG, SEED, TAG) already exists in src/log/<DATASET>/.
+# Walltime: 500 epochs with early stopping; override with  qsub -l walltime=HH:MM:SS ...
+
+cd "$PBS_O_WORKDIR" || exit 1
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV:-Astar}"
+
+CONFIG="${CONFIG:-fmrec}"
+SEED="${SEED:-1997}"
+DATASET="${DATASET:-amazon_beauty}"
+EPOCHS="${EPOCHS:-500}"
+TAG="${TAG:-}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
+ENCODER="${ENCODER:-all-MiniLM-L6-v2}"
+TEXT_EMB="datasets/data/${DATASET}/text_emb_${ENCODER}.npy"
+
+case "$CONFIG" in
+    fmrec)       ARGS="--model fmrec";                      MODS="id" ;;
+    idom_id)     ARGS="--model idom --modalities id";       MODS="id" ;;
+    idom_text)   ARGS="--model idom --modalities text";     MODS="text" ;;
+    idom_idtext) ARGS="--model idom --modalities id text";  MODS="id-text" ;;
+    *) echo "unknown CONFIG=$CONFIG"; exit 1 ;;
+esac
+MODEL="${ARGS#--model }"; MODEL="${MODEL%% *}"
+RUN="${DATASET}_${MODEL}_${MODS}_seed${SEED}${TAG:+_$TAG}"   # same name main.py gives its log/json
+
+if [[ "$MODS" == *text* ]]; then
+    [ -f "$TEXT_EMB" ] || { echo "missing $TEXT_EMB -> run scripts/prepare_text.pbs first"; exit 1; }
+    ARGS="$ARGS --text_emb ../$TEXT_EMB"
+fi
+
+if ls "src/log/${DATASET}/${RUN}_20"*.json >/dev/null 2>&1; then
+    echo "already done: $(ls src/log/${DATASET}/${RUN}_20*.json)"; exit 0
+fi
+
+echo "Job $PBS_JOBID on $(hostname): $RUN epochs=$EPOCHS $EXTRA_ARGS"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+# no --gpu_id: PBS already sets CUDA_VISIBLE_DEVICES for the allocated GPU
+(cd src && python -u main.py $ARGS --dataset "$DATASET" --random_seed "$SEED" --epochs "$EPOCHS" \
+    ${TAG:+--tag "$TAG"} $EXTRA_ARGS) || { echo "training failed"; exit 1; }
+echo "done: $(ls src/log/${DATASET}/${RUN}_20*.json)"

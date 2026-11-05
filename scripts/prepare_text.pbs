@@ -1,0 +1,24 @@
+#!/bin/bash
+#PBS -N idom_text
+#PBS -q small_gpuq
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# Step 0 (once): recover id->ASIN for amazon_beauty, verify it, build item texts, encode them.
+#   qsub -v RAW_DIR=/path/to/amazon2014 scripts/prepare_text.pbs
+#   qsub -v RAW_DIR=/path/to/amazon2014,ENCODER=sentence-transformers/all-mpnet-base-v2 scripts/prepare_text.pbs
+# RAW_DIR must contain reviews_Beauty_5.json.gz and meta_Beauty.json.gz (Amazon 2014).
+# The encoder is downloaded from Hugging Face on first use: if compute nodes have no internet, run the
+# same python command once on the login node instead (it only takes a few minutes).
+
+cd "$PBS_O_WORKDIR" || exit 1
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV:-Astar}"
+RAW_DIR="${RAW_DIR:?set RAW_DIR=folder with reviews_Beauty_5.json.gz and meta_Beauty.json.gz}"
+ENCODER="${ENCODER:-sentence-transformers/all-MiniLM-L6-v2}"
+
+python -u scripts/prepare_beauty_text.py \
+    --reviews "$RAW_DIR/reviews_Beauty_5.json.gz" --meta "$RAW_DIR/meta_Beauty.json.gz" \
+    --encoder "$ENCODER" || { echo "text preparation failed"; exit 1; }
+ls -la datasets/data/amazon_beauty/

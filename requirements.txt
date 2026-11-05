@@ -1,0 +1,4 @@
+numpy
+scipy
+sentence-transformers
+# torch: install separately with the CUDA build for your GPU
