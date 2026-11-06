@@ -40,7 +40,7 @@ opt = ap.parse_args()
 import torch  # noqa: E402
 from config import build_parser  # noqa: E402
 from utils import Data_Train, Data_Val  # noqa: E402
-from model import create_model_FM, Att_FM_model, IDOM_model  # noqa: E402
+from model import build_model  # noqa: E402
 from trainer import evaluate, optimizers  # noqa: E402
 
 os.chdir(SRC)
@@ -51,6 +51,11 @@ CONFIGS = {
     'idom_id': ['--model', 'idom', '--modalities', 'id'],
     'idom_text': ['--model', 'idom', '--modalities', 'text', '--text_emb', text_emb],
     'idom_idtext': ['--model', 'idom', '--modalities', 'id', 'text', '--text_emb', text_emb],
+    'eh_b4': ['--model', 'eh', '--modalities', 'id', 'text', '--text_emb', text_emb, '--head_off'],
+    'eh0': ['--model', 'eh', '--modalities', 'id', 'text', '--text_emb', text_emb],
+    'eh0_nodec': ['--model', 'eh', '--modalities', 'id', 'text', '--text_emb', text_emb, '--Loss_Beta', '0'],
+    'eh_c0': ['--model', 'eh', '--modalities', 'id', 'text', '--text_emb', text_emb, '--K_train', '2'],
+    'eh_c4': ['--model', 'eh', '--modalities', 'id', 'text', '--text_emb', text_emb, '--K_train', '2', '--coupling'],
 }
 
 with open(os.path.join('..', 'datasets', 'data', opt.dataset, 'dataset.pkl'), 'rb') as f:
@@ -74,16 +79,12 @@ print(f'host {socket.gethostname()} | {gpu} | torch {torch.__version__} | thread
 rows = []
 for cfg in opt.configs:
     for noise in opt.noise:
+        if noise == 'cpu' and cfg.startswith('eh'):
+            continue  # eh has no FMRec noise injection
         a = build_parser().parse_args(CONFIGS[cfg] + ['--dataset', opt.dataset] + (['--cpu_noise'] if noise == 'cpu' else []))
         a.device, a.item_num, a.user_num = device, len(d['smap']) + 1, len(d['train']) + 1
         torch.manual_seed(0)
-        fm = create_model_FM(a)
-        if a.model == 'fmrec':
-            model = Att_FM_model(fm, a)
-        else:
-            tf = torch.from_numpy(np.load(a.text_emb)).float() if 'text' in a.modalities else None
-            model = IDOM_model(fm, a, tf)
-        model = model.to(device)
+        model = build_model(a).to(device)
         opt_ = optimizers(model, a)
         if device == 'cuda':
             torch.cuda.empty_cache()
@@ -125,7 +126,7 @@ for cfg in opt.configs:
         row['peak_mem_MB'] = round(torch.cuda.max_memory_allocated() / 2 ** 20) if device == 'cuda' else None
         rows.append(row)
         print(json.dumps(row), flush=True)
-        del model, opt_, fm
+        del model, opt_
 
 cols = ['config', 'noise', 'train_s_per_batch', 'train_s_per_epoch'] + [f'val_s_N{n}' for n in opt.steps] + ['peak_mem_MB']
 w = {c: max(len(c), *(len(str(r[c])) for r in rows)) for c in cols}

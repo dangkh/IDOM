@@ -150,6 +150,45 @@ python tools/summarize_logs.py --select HR@10 --csv results_logs.csv
 - Hàng **TEST** lấy số test cuối cùng nếu run đã xong. Nếu run chưa xong, nó lấy dòng `Test epoch E` ở đúng epoch có val tốt nhất. Trainer mới ghi dòng này mỗi 10 epoch.
 - Các run chạy bằng code cũ chỉ có số VAL, cho tới khi chạy xong.
 
+## IDOM-SC: thử tính khả thi (exp_spec_revise.md), 1 seed
+
+Model `--model eh` gồm encoder lịch sử chạy một lần mỗi batch và một đầu dự đoán nhẹ cho mỗi bước, có tùy chọn score coupling. Code nằm ở `src/eh_model.py`. Mọi run trong giai đoạn này dùng seed 1997 và khởi tạo từ checkpoint của cùng seed.
+
+```bash
+# 0) BẮT BUỘC chạy trước: kiểm tra đúng đắn + đo tốc độ (~15–30 phút). Nếu có test FAIL, đừng train.
+qsub scripts/smoke_eh.pbs
+
+# 1) Baseline B2 (sau khi IqD text-only v3 xong) và IDOM đã tune fusion (B3')
+python tools/ensemble_eval.py --a amazon_beauty_fmrec_id_seed1997_v3 --b amazon_beauty_idom_text_seed1997_v3
+python tools/ensemble_eval.py --a amazon_beauty_idom_id-text_seed1997_v3 --a_key id --b amazon_beauty_idom_id-text_seed1997_v3 --b_key text
+
+# 2) Giai đoạn 0–1: B4 (head tắt), EH-0, EH-0 bỏ decoder phụ (khởi tạo từ IDOM v3 seed 1997)
+qsub -N IqF -v RUNS="eh_b4/1997+eh0/1997" scripts/queue_run.pbs
+qsub -N IqG -v RUNS="eh0_nodec/1997" scripts/queue_run.pbs
+#    -> điều kiện: K có tác dụng không? (1 vs 2, 3, 5 bước)
+qsub -v RUNS="amazon_beauty_eh_id-text_seed1997_eh0",STEPS="1:2:3:5" scripts/eval_steps.pbs
+
+# 3) Giai đoạn 2 (chỉ khi giai đoạn 1 đạt): coupling, khởi tạo từ eh0 seed 1997
+qsub -N IqH -v RUNS="c0/1997+c2/1997" scripts/queue_run.pbs
+qsub -N IqI -v RUNS="c4/1997+c6/1997" scripts/queue_run.pbs
+#    C5 = C4 không dùng message khi suy luận (chỉ eval):
+python tools/eval_ckpt.py --run amazon_beauty_eh_id-text_seed1997_c4 --steps 2 --msg_off
+```
+
+| Config | Ý nghĩa | Khởi tạo từ |
+|---|---|---|
+| `eh_b4` | B4: head tắt, x̂₁ = h_last (dự đoán trực tiếp, không x_t) | IDOM v3 |
+| `eh0` | EH-0: encoder + head, chưa coupling | IDOM v3 |
+| `eh0_nodec` | EH-0 bỏ decoder phụ (`--Loss_Beta 0`) | IDOM v3 |
+| `c0` | rollout K = 2, không message | eh0 |
+| `c2` | lặp tinh chỉnh không ODE (x cố định = 0) + message | eh0 |
+| `c4` | coupling đầy đủ (đề xuất) | eh0 |
+| `c6` | c4 với intent = 0 | eh0 |
+
+- **Ngân sách fine-tune:** 100 epoch, eval val/test mỗi 10 epoch, patience 5.
+- **Learning rate:** trọng số khởi tạo từ checkpoint học với lr × 0,1 (`--lr_pretrained_scale`); module mới học với lr đầy đủ.
+- **Ước tính thời gian** (cần xác nhận bằng smoke job): khoảng 1–2,5 giờ mỗi run trên node nhanh.
+
 ## Cách đọc kết quả
 
 - (b) ≈ (a): việc dùng chung vector field cộng modality embedding không làm hỏng FMRec.

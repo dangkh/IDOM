@@ -221,3 +221,17 @@ class IDOM_model(nn.Module):
 
 def create_model_FM(args):
     return FMRec(args)
+
+
+def build_model(args):
+    """fmrec / idom / eh from args (paths relative to src/)."""
+    text_feat = None
+    if args.model in ('idom', 'eh') and 'text' in args.modalities:
+        assert args.text_emb, '--text_emb is required for the text modality (run scripts/prepare_text.sh)'
+        text_feat = torch.from_numpy(np.load(args.text_emb)).float()
+    if args.model == 'fmrec':
+        return Att_FM_model(FMRec(args), args)
+    if args.model == 'idom':
+        return IDOM_model(FMRec(args), args, text_feat)
+    from eh_model import EHModel
+    return EHModel(args, text_feat)

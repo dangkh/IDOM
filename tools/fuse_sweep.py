@@ -33,7 +33,7 @@ opt = ap.parse_args()
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 from utils import Data_Val, Data_Test  # noqa: E402
-from model import create_model_FM, IDOM_model  # noqa: E402
+from model import build_model  # noqa: E402
 from trainer import hrs_and_ndcgs_k  # noqa: E402
 
 os.chdir(SRC)  # paths stored in the checkpoint args are relative to src/
@@ -41,15 +41,14 @@ device = opt.device if torch.cuda.is_available() else 'cpu'
 ck = torch.load(os.path.join('ckpt', opt.dataset, opt.run, 'best.pt'), map_location=device, weights_only=False)
 a = Namespace(**ck['args'])
 a.device = device
-assert a.model == 'idom' and len(a.modalities) == 2, 'fuse sweep needs an IDOM run with two modalities'
+assert a.model in ('idom', 'eh') and len(a.modalities) == 2, 'fuse sweep needs an IDOM/EH run with two modalities'
 print(f'run {opt.run}: best checkpoint from epoch {ck["epoch"]}, modalities {a.modalities}')
 
 with open(os.path.join('..', 'datasets', 'data', a.dataset, 'dataset.pkl'), 'rb') as f:
     d = pickle.load(f)
 loaders = {'val': Data_Val(d['train'], d['val'], a).get_pytorch_dataloaders(),
            'test': Data_Test(d['train'], d['val'], d['test'], a).get_pytorch_dataloaders()}
-text_feat = torch.from_numpy(np.load(a.text_emb)).float() if 'text' in a.modalities else None
-model = IDOM_model(create_model_FM(a), a, text_feat).to(device)
+model = build_model(a).to(device)
 model.load_state_dict(ck['model'])
 model.eval()
 

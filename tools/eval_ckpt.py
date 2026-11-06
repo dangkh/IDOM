@@ -25,11 +25,13 @@ ap.add_argument('--run', required=True)
 ap.add_argument('--dataset', default='amazon_beauty')
 ap.add_argument('--steps', nargs='+', type=int, default=[1, 2, 5, 10, 30])
 ap.add_argument('--seed', type=int, default=0)
+ap.add_argument('--msg_off', action='store_true', help='C5: evaluate a coupled EH model without messages')
+ap.add_argument('--splits', nargs='+', default=['val', 'test'], choices=['val', 'test'])
 opt = ap.parse_args()
 
 import torch  # noqa: E402
 from utils import Data_Val, Data_Test  # noqa: E402
-from model import create_model_FM, Att_FM_model, IDOM_model  # noqa: E402
+from model import build_model  # noqa: E402
 from trainer import evaluate  # noqa: E402
 
 os.chdir(SRC)
@@ -39,17 +41,17 @@ a = Namespace(**ck['args'])
 a.device = device
 with open(os.path.join('..', 'datasets', 'data', a.dataset, 'dataset.pkl'), 'rb') as f:
     d = pickle.load(f)
-loaders = {'val': Data_Val(d['train'], d['val'], a).get_pytorch_dataloaders(),
-           'test': Data_Test(d['train'], d['val'], d['test'], a).get_pytorch_dataloaders()}
-fm = create_model_FM(a)
-if a.model == 'fmrec':
-    model = Att_FM_model(fm, a)
-else:
-    tf = torch.from_numpy(np.load(a.text_emb)).float() if 'text' in a.modalities else None
-    model = IDOM_model(fm, a, tf)
-model = model.to(device)
+loaders = {}
+if 'val' in opt.splits:
+    loaders['val'] = Data_Val(d['train'], d['val'], a).get_pytorch_dataloaders()
+if 'test' in opt.splits:
+    loaders['test'] = Data_Test(d['train'], d['val'], d['test'], a).get_pytorch_dataloaders()
+model = build_model(a).to(device)
 model.load_state_dict(ck['model'])
-print(f'{opt.run}: checkpoint from epoch {ck["epoch"]}, trained with sample_N={a.sample_N}')
+model.eval()
+if opt.msg_off:
+    model.msg_off_eval = True
+print(f'\n=== {opt.run}: checkpoint from epoch {ck["epoch"]}, trained with sample_N={a.sample_N}')
 
 res = {}
 for n in opt.steps:
@@ -65,15 +67,16 @@ for n in opt.steps:
             torch.cuda.synchronize()
         res[n][split] = {'time_s': round(time.perf_counter() - t0, 1), **r}
 
-keys = list(res[opt.steps[0]]['test'].keys() - {'time_s'})
-keys = ['fused'] + sorted(k for k in keys if k != 'fused')
-print(f'\n{"N":>3} | {"val time":>8} {"test time":>9} | ' + ' | '.join(f'test {k} HR@10 / NDCG@10' for k in keys))
-for n in opt.steps:
-    v, t = res[n]['val'], res[n]['test']
-    print(f'{n:>3} | {v["time_s"]:>7.1f}s {t["time_s"]:>8.1f}s | '
-          + ' | '.join(f'{t[k]["HR@10"]:>10.2f} / {t[k]["NDCG@10"]:<10.2f}' for k in keys))
+for split in opt.splits:
+    keys = list(res[opt.steps[0]][split].keys() - {'time_s'})
+    keys = ['fused'] + sorted(k for k in keys if k != 'fused')
+    print(f'\n[{split}]  {"N":>3} | {"time":>7} | ' + ' | '.join(f'{k}: HR@10 / NDCG@10 / HR@20 / NDCG@20' for k in keys))
+    for n in opt.steps:
+        r = res[n][split]
+        print(f'[{split}]  {n:>3} | {r["time_s"]:>6.1f}s | ' + ' | '.join(
+            f'{r[k]["HR@10"]:.2f} / {r[k]["NDCG@10"]:.2f} / {r[k]["HR@20"]:.2f} / {r[k]["NDCG@20"]:.2f}' for k in keys), flush=True)
 
-out = os.path.join(a.log_file, opt.dataset, f'{opt.run}_steps.json')
+out = os.path.join(a.log_file, opt.dataset, f'{opt.run}{"_msgoff" if opt.msg_off else ""}_steps.json')
 with open(out, 'w') as f:
     json.dump({'run': opt.run, 'ckpt_epoch': ck['epoch'], 'results': {str(n): r for n, r in res.items()}}, f, indent=2)
 print('\nsaved', os.path.join('src', out))

@@ -11,10 +11,17 @@ import torch.optim as optim
 
 
 def optimizers(model, args):
+    params = model.parameters()
+    pre = getattr(model, 'pretrained_names', None)
+    scale = getattr(args, 'lr_pretrained_scale', 1.0)
+    if pre and scale != 1.0:  # warm start: lower lr for loaded weights, full lr for new modules
+        named = list(model.named_parameters())
+        params = [{'params': [p for n, p in named if n in pre], 'lr': args.lr * scale},
+                  {'params': [p for n, p in named if n not in pre], 'lr': args.lr}]
     if args.optimizer.lower() == 'adam':
-        return optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        return optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
     elif args.optimizer.lower() == 'sgd':
-        return optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, momentum=args.momentum)
+        return optim.SGD(params, lr=args.lr, weight_decay=args.weight_decay, momentum=args.momentum)
     raise ValueError(args.optimizer)
 
 

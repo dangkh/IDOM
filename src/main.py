@@ -17,7 +17,7 @@ if args.gpu_id is not None:
 import torch  # noqa: E402  (import after CUDA_VISIBLE_DEVICES is set)
 import torch.backends.cudnn as cudnn  # noqa: E402
 from utils import Data_Train, Data_Val, Data_Test  # noqa: E402
-from model import create_model_FM, Att_FM_model, IDOM_model  # noqa: E402
+from model import build_model  # noqa: E402
 from trainer import model_train  # noqa: E402
 
 if args.device == 'cuda' and not torch.cuda.is_available():
@@ -26,7 +26,7 @@ if args.device == 'cuda' and not torch.cuda.is_available():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 run_name = '{}_{}_{}_seed{}{}'.format(
-    args.dataset, args.model, '-'.join(args.modalities) if args.model == 'idom' else 'id',
+    args.dataset, args.model, '-'.join(args.modalities) if args.model in ('idom', 'eh') else 'id',
     args.random_seed, ('_' + args.tag) if args.tag else '')
 log_dir = os.path.join(args.log_file, args.dataset)
 os.makedirs(log_dir, exist_ok=True)
@@ -61,15 +61,13 @@ def main(args, logger):
     val_loader = Data_Val(data_raw['train'], data_raw['val'], args).get_pytorch_dataloaders()
     test_loader = Data_Test(data_raw['train'], data_raw['val'], data_raw['test'], args).get_pytorch_dataloaders()
 
-    fm = create_model_FM(args)
-    if args.model == 'fmrec':
-        model = Att_FM_model(fm, args)
-    else:
-        text_feat = None
-        if 'text' in args.modalities:
-            assert args.text_emb, '--text_emb is required for the text modality (run scripts/prepare_beauty_text.py)'
-            text_feat = torch.from_numpy(np.load(args.text_emb)).float()
-        model = IDOM_model(fm, args, text_feat)
+    model = build_model(args)
+    if args.warm_start:
+        from eh_model import load_warm_start
+        n_loaded, not_loaded = load_warm_start(model, args.warm_start)
+        msg = f'warm start from {args.warm_start}: {n_loaded} params loaded; new/unloaded: {not_loaded}'
+        print(msg)
+        logger.info(msg)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'model={args.model} trainable params={n_params:,}')
     logger.info(f'model={args.model} trainable params={n_params:,}')

@@ -4,10 +4,27 @@ import argparse
 
 def build_parser():
     parser = argparse.ArgumentParser()
-    parser = argparse.ArgumentParser()
     # ---- model selection (new) ----
-    parser.add_argument('--model', default='fmrec', choices=['fmrec', 'idom'],
-                        help='fmrec = original ID-only FMRec; idom = parallel per-modality flows (no intent anchor yet)')
+    parser.add_argument('--model', default='fmrec', choices=['fmrec', 'idom', 'eh'],
+                        help='fmrec = original ID-only FMRec; idom = parallel per-modality flows (no intent anchor yet); '
+                             'eh = cached history encoder + per-step head (exp_spec_revise.md), optional score coupling')
+    # ---- eh model (exp_spec_revise.md) ----
+    parser.add_argument('--head_off', action='store_true', help='B4: no step head, x1_hat = h_last (direct predictor)')
+    parser.add_argument('--head_layers', type=int, default=1)
+    parser.add_argument('--head_heads', type=int, default=4)
+    parser.add_argument('--K_train', type=int, default=0, help='free-rollout steps in training (0 = no rollout branch)')
+    parser.add_argument('--coupling', action='store_true', help='cross-modal score messages between steps')
+    parser.add_argument('--x_frozen', action='store_true', help='C2: state fixed at 0 (iterative refinement, no ODE)')
+    parser.add_argument('--q_const', action='store_true', help='C6: intent replaced by zeros')
+    parser.add_argument('--msg_off_eval', action='store_true', help='C5: no messages at inference')
+    parser.add_argument('--grad_step0', action='store_true', help='backprop through rollout step 0 (default: no_grad)')
+    parser.add_argument('--lam_flow', type=float, default=1.0, help='weight of the teacher flow-matching branch')
+    parser.add_argument('--lam_rank', type=float, default=0.2, help='weight of CE on fused rollout scores')
+    parser.add_argument('--lam_branch', type=float, default=0.1, help='weight of CE on per-modality rollout scores')
+    parser.add_argument('--tau', type=float, default=1.0, help='softmax temperature for coupling probabilities')
+    parser.add_argument('--warm_start', default=None, help='checkpoint (IDOM or EH best.pt) to initialise from')
+    parser.add_argument('--lr_pretrained_scale', type=float, default=0.1,
+                        help='learning-rate multiplier for warm-started parameters (new modules use --lr)')
     parser.add_argument('--modalities', nargs='+', default=['id', 'text'], help="IDOM modalities, e.g. id text | text | id")
     parser.add_argument('--text_emb', default=None, help='.npy item text embeddings, shape (item_num+1, d), row 0 = padding')
     parser.add_argument('--fuse_weights', nargs='+', type=float, default=None,
@@ -17,7 +34,7 @@ def build_parser():
     parser.add_argument('--gpu_id', default=None, help='sets CUDA_VISIBLE_DEVICES if given (FMRec hard-coded "7")')
     parser.add_argument('--eval_train', action='store_true', help='also report metrics on the training set (slow)')
     parser.add_argument('--tag', default='', help='free-text tag appended to the result file name')
-    parser.add_argument('--test_interval', type=int, default=10,
+    parser.add_argument('--test_interval', type=int, default=20,
                         help='evaluate (and log) the TEST set every N epochs, so a run killed by walltime still has '
                              'test numbers; 0 = only at the end')
     parser.add_argument('--resume', action='store_true', help='continue from ckpt/<run>/last.pt if it exists')
@@ -51,7 +68,8 @@ def build_parser():
     parser.add_argument('--eval_interval', type=int, default=20, help='the number of epoch to eval')
     parser.add_argument('--patience', type=int, default=5, help='the number of epoch to wait before early stop')
     parser.add_argument('--eps', type=float, default=0.001, help='start step')
-    parser.add_argument('--sample_N', type=int, default=30, help='Euler calculate steps')
+    parser.add_argument('--sample_N', type=int, default=5,
+                        help='Euler steps at inference (FMRec default 30; eval_steps shows 1 = 5 = 30 on Beauty, 5 is ~6x faster)')
     parser.add_argument('--lambda_t', type=float, default=0.001, help='scale of condition')
     parser.add_argument('--dropout_c', type=float, default=0.1, help='scale of condition')
     parser.add_argument('--eps_reverse', type=float, default=0.001, help='reverse start step')

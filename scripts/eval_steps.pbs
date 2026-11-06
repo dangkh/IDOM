@@ -1,0 +1,20 @@
+#!/bin/bash
+#PBS -N Isteps
+#PBS -q small_gpuq
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# Accuracy and time vs number of Euler steps, from best.pt checkpoints (GPU, a few minutes per run).
+#   qsub scripts/eval_steps.pbs
+#   qsub -v RUNS="amazon_beauty_fmrec_id_seed1997_v3+amazon_beauty_idom_id-text_seed1997_v3",STEPS="1:2:5:10:30" scripts/eval_steps.pbs
+cd "$PBS_O_WORKDIR" || exit 1
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV:-Astar}"
+D=amazon_beauty
+RUNS="${RUNS:-${D}_fmrec_id_seed1997_v3+${D}_fmrec_id_seed2024_v3+${D}_fmrec_id_seed42_v3+${D}_idom_id-text_seed1997_v3+${D}_idom_id-text_seed2024_v3+${D}_idom_id-text_seed42_v3}"
+STEPS="${STEPS:-1:2:5:10:30}"
+echo "Job $PBS_JOBID on $(hostname)"; nvidia-smi --query-gpu=name --format=csv,noheader
+for r in ${RUNS//+/ }; do
+    python -u tools/eval_ckpt.py --run "$r" --steps ${STEPS//:/ } || echo "FAILED: $r"
+done

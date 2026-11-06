@@ -12,6 +12,9 @@
 #   qsub -v CONFIG=idom_idtext,TAG=w05,EXTRA_ARGS="--fuse_weights 1.0 0.5" scripts/idom_run.pbs
 #   PARALLEL=0 -> seeds one after another (needs ~3x walltime)
 # CONFIG: fmrec (a) | idom_id (b) | idom_text (c) | idom_idtext (d)
+#   eh model (exp_spec_revise.md), warm-started, 100 epochs, eval/test every 10 epochs:
+#   eh_b4 | eh0 | eh0_nodec   <- from IDOM v3 best.pt of the same seed   (IDOM_TAG, default v3)
+#   c0 | c2 | c4 | c6         <- from eh0 best.pt of the same seed        (EH_TAG, default eh0)
 # Seeds whose result JSON already exists in src/log/<DATASET>/ are skipped; unfinished seeds RESUME from their
 # last checkpoint, so after a walltime kill just qsub the same command again.
 
@@ -23,19 +26,32 @@ CONFIG="${CONFIG:-fmrec}"
 SEEDS="${SEEDS:-1997:2024:42}"            # colon-separated (qsub -v splits on commas)
 PARALLEL="${PARALLEL:-1}"
 DATASET="${DATASET:-amazon_beauty}"
-EPOCHS="${EPOCHS:-500}"
 TAG="${TAG:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 ENCODER="${ENCODER:-all-MiniLM-L6-v2}"
 TEXT_EMB="datasets/data/${DATASET}/text_emb_${ENCODER}.npy"
 
+EH="--model eh --modalities id text"
+FT="--eval_interval 10 --test_interval 10"
+IDOM_CK="ckpt/${DATASET}/${DATASET}_idom_id-text_seed@SEED@_${IDOM_TAG:-v3}/best.pt"
+EH0_CK="ckpt/${DATASET}/${DATASET}_eh_id-text_seed@SEED@_${EH_TAG:-eh0}/best.pt"
+CTAG=""; EDEF=500; WARM=""
 case "$CONFIG" in
     fmrec)       ARGS="--model fmrec";                      MODS="id" ;;
     idom_id)     ARGS="--model idom --modalities id";       MODS="id" ;;
     idom_text)   ARGS="--model idom --modalities text";     MODS="text" ;;
     idom_idtext) ARGS="--model idom --modalities id text";  MODS="id-text" ;;
+    eh_b4)       ARGS="$EH --head_off $FT";                          MODS="id-text"; CTAG=b4;       EDEF=100; WARM="$IDOM_CK" ;;
+    eh0)         ARGS="$EH $FT";                                     MODS="id-text"; CTAG=eh0;      EDEF=100; WARM="$IDOM_CK" ;;
+    eh0_nodec)   ARGS="$EH --Loss_Beta 0 $FT";                       MODS="id-text"; CTAG=eh0nodec; EDEF=100; WARM="$IDOM_CK" ;;
+    c0)          ARGS="$EH --K_train 2 $FT";                         MODS="id-text"; CTAG=c0;       EDEF=100; WARM="$EH0_CK" ;;
+    c2)          ARGS="$EH --K_train 2 --coupling --x_frozen $FT";   MODS="id-text"; CTAG=c2;       EDEF=100; WARM="$EH0_CK" ;;
+    c4)          ARGS="$EH --K_train 2 --coupling $FT";              MODS="id-text"; CTAG=c4;       EDEF=100; WARM="$EH0_CK" ;;
+    c6)          ARGS="$EH --K_train 2 --coupling --q_const $FT";    MODS="id-text"; CTAG=c6;       EDEF=100; WARM="$EH0_CK" ;;
     *) echo "unknown CONFIG=$CONFIG"; exit 1 ;;
 esac
+EPOCHS="${EPOCHS:-$EDEF}"
+FULLTAG="$CTAG"; [ -n "$TAG" ] && FULLTAG="${FULLTAG:+${FULLTAG}_}$TAG"
 MODEL="${ARGS#--model }"; MODEL="${MODEL%% *}"
 if [[ "$MODS" == *text* ]]; then
     [ -f "$TEXT_EMB" ] || { echo "missing $TEXT_EMB -> run scripts/prepare_text.sh first (CPU, no queue)"; exit 1; }
@@ -56,15 +72,21 @@ echo "threads per seed: $T"
 
 pids=(); runs=(); fail=0
 for SEED in ${SEEDS//:/ }; do
-    RUN="${DATASET}_${MODEL}_${MODS}_seed${SEED}${TAG:+_$TAG}"   # same name main.py gives its log/json
+    RUN="${DATASET}_${MODEL}_${MODS}_seed${SEED}${FULLTAG:+_$FULLTAG}"   # same name main.py gives its log/json
     if ls "${LOG}/${RUN}_20"*.json >/dev/null 2>&1; then
         echo "skip (already done): $RUN"; continue
     fi
-    echo "start: $RUN  (stdout -> ${LOG}/${RUN}.out)"
+    WS=""
+    if [ -n "$WARM" ]; then
+        W="${WARM//@SEED@/$SEED}"
+        [ -f "src/$W" ] || { echo "missing warm-start checkpoint src/$W -> run its config first; skipping $RUN"; fail=1; continue; }
+        WS="--warm_start $W"
+    fi
+    echo "start: $RUN  (stdout -> ${LOG}/${RUN}.out) ${WS}"
     # no --gpu_id: PBS already sets CUDA_VISIBLE_DEVICES for the allocated GPU
     # --resume: continues from src/ckpt/<dataset>/<run>/last.pt if a previous job was killed (e.g. walltime)
     (cd src && exec python -u main.py $ARGS --dataset "$DATASET" --random_seed "$SEED" --epochs "$EPOCHS" \
-        --resume ${TAG:+--tag "$TAG"} $EXTRA_ARGS) >> "${LOG}/${RUN}.out" 2>&1 &
+        --resume ${FULLTAG:+--tag "$FULLTAG"} $WS $EXTRA_ARGS) >> "${LOG}/${RUN}.out" 2>&1 &
     pid=$!
     if [ "$PARALLEL" = "1" ]; then pids+=($pid); runs+=($RUN)
     else wait $pid; rc=$?; echo "$RUN exit $rc"; [ $rc -ne 0 ] && { fail=1; tail -5 "${LOG}/${RUN}.out"; }; fi
@@ -74,5 +96,5 @@ for i in "${!pids[@]}"; do
     wait "${pids[$i]}"; rc=$?
     echo "${runs[$i]} exit $rc"; [ $rc -ne 0 ] && { fail=1; tail -5 "${LOG}/${runs[$i]}.out"; }
 done
-ls "${LOG}/${DATASET}_${MODEL}_${MODS}_seed"*"${TAG:+_$TAG}_20"*.json 2>/dev/null
+ls "${LOG}/${DATASET}_${MODEL}_${MODS}_seed"*"${FULLTAG:+_$FULLTAG}_20"*.json 2>/dev/null
 exit $fail

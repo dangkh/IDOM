@@ -26,7 +26,7 @@ for f in files:
     with open(f) as fh:
         r = json.load(fh)
     a = r['args']
-    mods = '+'.join(a['modalities']) if a['model'] == 'idom' else 'id'
+    mods = '+'.join(a['modalities']) if a['model'] in ('idom', 'eh') else 'id'
     name = f"{a['model']}[{mods}]" + (f" {a['tag']}" if a.get('tag') else '')
     if a.get('epochs', 500) != 500:
         name += f" ep{a['epochs']}"

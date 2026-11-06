@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -N Ismoke
+#PBS -q small_gpuq
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# Before any eh training: correctness tests (tools/smoke_eh.py) + speed of the eh configs vs IDOM.
+#   qsub scripts/smoke_eh.pbs          (~15-30 min)
+cd "$PBS_O_WORKDIR" || exit 1
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV:-Astar}"
+export OMP_NUM_THREADS=${NCPUS:-4} MKL_NUM_THREADS=${NCPUS:-4}
+echo "Job $PBS_JOBID on $(hostname)"; nvidia-smi --query-gpu=name --format=csv,noheader
+python -u tools/smoke_eh.py || { echo "SMOKE TESTS FAILED - do not start eh training"; exit 1; }
+python -u tools/benchmark_speed.py --configs idom_idtext eh_b4 eh0 eh0_nodec eh_c0 eh_c4 --noise gpu --steps 1 2 5
