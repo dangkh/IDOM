@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N Iens
+#PBS -q small_gpuq
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# Stage 0 baselines on GPU (a few minutes each):
+#   B2  = FMRec v3 + text-only v3 (trained separately), fusion weight tuned on val
+#   B3' = IDOM v3 / IDOM lam0, ID+text fusion weight tuned on val (+ rescue/harm)
+#   qsub scripts/ensemble.pbs
+#   qsub -v SEED=2024 scripts/ensemble.pbs
+cd "$PBS_O_WORKDIR" || exit 1
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV:-Astar}"
+export OMP_NUM_THREADS=${NCPUS:-4} MKL_NUM_THREADS=${NCPUS:-4}
+D=amazon_beauty; S="${SEED:-1997}"; STEPS="${STEPS:-1}"
+echo "Job $PBS_JOBID on $(hostname), seed $S, steps $STEPS"; nvidia-smi --query-gpu=name --format=csv,noheader
+
+run() { echo; echo "################ $*"; python -u tools/ensemble_eval.py "$@" --steps "$STEPS" || echo "FAILED: $*"; }
+run --a ${D}_fmrec_id_seed${S}_v3 --b ${D}_idom_text_seed${S}_v3
+run --a ${D}_idom_id-text_seed${S}_v3   --a_key id --b ${D}_idom_id-text_seed${S}_v3   --b_key text
+run --a ${D}_idom_id-text_seed${S}_lam0 --a_key id --b ${D}_idom_id-text_seed${S}_lam0 --b_key text
